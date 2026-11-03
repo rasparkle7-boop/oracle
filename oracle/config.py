@@ -32,8 +32,8 @@ class Settings:
     app_name: str = "ORACLE // Sports Intelligence Engine"
     version: str = "2.0.0"
     model_version: str = "oracle-dc-mc-2.0"
-    host: str = os.getenv("ORACLE_HOST", "127.0.0.1")
-    port: int = _env_int("ORACLE_PORT", 8787)
+    host: str = os.getenv("ORACLE_HOST", "0.0.0.0")
+    port: int = _env_int("PORT", _env_int("ORACLE_PORT", 8787))
     db_path: Path = DB_PATH
     data_dir: Path = DATA_DIR
     cache_dir: Path = CACHE_DIR
