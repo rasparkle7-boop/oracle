@@ -146,7 +146,36 @@ def init_db() -> None:
         schema = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
         if __import__("os").getenv("DATABASE_URL", "").strip():
             with db() as conn:
-                conn.executescript(_postgres_schema(schema))
+                table_names = re.findall(
+                    r"(?im)^\s*CREATE TABLE IF NOT EXISTS\s+(\w+)", schema
+                )
+                placeholders = ",".join("?" for _ in table_names)
+                present = scalar(
+                    conn,
+                    "SELECT count(*) FROM information_schema.tables "
+                    f"WHERE table_schema=current_schema() AND table_name IN ({placeholders})",
+                    table_names,
+                    0,
+                )
+                # Avoid replaying index/table DDL on every service start. A running
+                # sync writes these tables continuously and can hold deployment locks.
+                if present < len(table_names):
+                    conn.executescript(_postgres_schema(schema))
+
+                columns = rows(
+                    conn,
+                    "SELECT table_name, column_name FROM information_schema.columns "
+                    "WHERE table_schema=current_schema() AND ((table_name='settlements' "
+                    "AND column_name='pick_prob') OR (table_name='prediction_history' "
+                    "AND column_name='lineups_fingerprint'))",
+                )
+                present_columns = {(r["table_name"], r["column_name"]) for r in columns}
+                if ("settlements", "pick_prob") not in present_columns:
+                    conn.execute("ALTER TABLE settlements ADD COLUMN pick_prob REAL")
+                if ("prediction_history", "lineups_fingerprint") not in present_columns:
+                    conn.execute(
+                        "ALTER TABLE prediction_history ADD COLUMN lineups_fingerprint TEXT DEFAULT ''"
+                    )
         else:
             with db() as conn:
                 conn.executescript(schema)
