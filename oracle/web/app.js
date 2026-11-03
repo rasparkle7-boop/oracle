@@ -1,3 +1,5 @@
+const API_BASE = "https://oracle-api-k6xr.onrender.com";
+const ORACLE_STREAM_URL = `${API_BASE}/api/stream`;
 /* ORACLE mission control */
 (() => {
   "use strict";
@@ -91,17 +93,23 @@
   };
 
   // ------------------------------------------------------------------ api
-  async function api(path, opts = {}) {
-    const res = await fetch(path, {
-      headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
-      ...opts,
+  async function api(path, options = {}) {
+    const response = await fetch(`${API_BASE}${path}`, {
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...(options.headers || {}),
+      },
     });
-    if (!res.ok) {
-      let msg = `${res.status} ${res.statusText}`;
-      try { const j = await res.json(); msg = j.detail || j.message || msg; } catch (e) { /* noop */ }
+    if (!response.ok) {
+      let msg = `${response.status} ${response.statusText}`;
+      try {
+        const data = await response.json();
+        msg = data.detail || data.message || msg;
+      } catch (e) { /* response was not JSON */ }
       throw new Error(msg);
     }
-    return res.json();
+    return response.json();
   }
 
   function toast(message, type = "ok") {
@@ -1727,7 +1735,7 @@
   function connectStream() {
     if (!("EventSource" in window)) return;
     try {
-      const es = new EventSource("/api/stream");
+      const es = new EventSource(ORACLE_STREAM_URL);
       es.onmessage = (ev) => {
         try {
           const d = JSON.parse(ev.data);
@@ -1739,10 +1747,10 @@
             }
             if (d.last_sync) $("#syncAge").textContent = timeAgo(d.last_sync);
           }
-        } catch (e) { /* noop */ }
+        } catch (e) { /* ignore malformed stream messages */ }
       };
-      es.onerror = () => { /* browser retries */ };
-    } catch (e) { /* noop */ }
+      es.onerror = () => { /* EventSource retries automatically */ };
+    } catch (e) { /* EventSource unavailable */ }
   }
 
   // ------------------------------------------------------------------ dev live reload
@@ -1756,9 +1764,17 @@
     } catch (e) { return; }
     let hadError = false;
     const es = new EventSource("/api/dev/reload");
-    es.onopen = () => { if (hadError) { hadError = false; location.reload(); } };
+    es.onopen = () => {
+      if (hadError) {
+        hadError = false;
+        location.reload();
+      }
+    };
     es.onmessage = (ev) => {
-      try { const d = JSON.parse(ev.data); if (d.version) location.reload(); } catch (e) { /* noop */ }
+      try {
+        const d = JSON.parse(ev.data);
+        if (d.version) location.reload();
+      } catch (e) { /* ignore malformed reload messages */ }
     };
     es.onerror = () => { hadError = true; };
   }
@@ -1790,10 +1806,3 @@
         if (btn) { btn.classList.toggle("on", r.watchlisted); }
         toast(r.watchlisted ? "Pinned to watchlist" : "Removed from watchlist");
       } catch (e) { toast(e.message, "err"); }
-    },
-    runSync,
-    searchGrid: (q) => { closePalette(); state.filters = { ...state.filters, q: q || "" }; navigate("#/fixtures"); },
-  };
-
-  boot();
-})();
