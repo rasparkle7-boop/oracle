@@ -1799,10 +1799,37 @@ const ORACLE_STREAM_URL = `${API_BASE}/api/stream`;
   }
 
   window.ORACLE = {
-    open: (id) => { location.hash = `#/match/${encodeURIComponent(id)}`; if (state.route === "match") route(); },
+    open: (id) => {
+      location.hash = `#/match/${encodeURIComponent(id)}`;
+      if (state.route === "match") route();
+    },
+
     watch: async (id, btn) => {
       try {
-        const r = await api(`/api/watch/${encodeURIComponent(id)}`, { method: "POST" });
-        if (btn) { btn.classList.toggle("on", r.watchlisted); }
-        toast(r.watchlisted ? "Pinned to watchlist" : "Removed from watchlist");
-      } catch (e) { toast(e.message, "err"); }
+        const r = await api(`/api/watch/${encodeURIComponent(id)}`, {
+          method: "POST"
+        });
+
+        if (btn) {
+          btn.classList.toggle("on", r.watchlisted);
+        }
+
+        toast(
+          r.watchlisted ? "Pinned to watchlist" : "Removed from watchlist"
+        );
+      } catch (e) {
+        toast(e.message, "err");
+      }
+    },
+
+    runSync,
+
+    searchGrid: (q) => {
+      closePalette();
+      state.filters = { ...state.filters, q: q || "" };
+      navigate("#/fixtures");
+    },
+  };
+
+  boot();
+})();
