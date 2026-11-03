@@ -9,3 +9,6 @@ test.png
 mission.png
 *.png
 !docs/*.png
+.env
+.env.*
+!.env.example
