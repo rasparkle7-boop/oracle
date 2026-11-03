@@ -40,9 +40,13 @@ def loop() -> None:
     while True:
         try:
             if _due():
-                db.log("info", "scheduler", "scheduled cycle triggered")
-                pipeline.run_full_sync()
-                db.set_state("next_sync", _iso(_now() + timedelta(minutes=settings.fixtures_refresh_minutes)))
+                # A scheduled workflow may already have started a sync. Avoid
+                # generating failed duplicate jobs while that cycle is running.
+                if not pipeline._SYNC_LOCK.locked():
+                    db.log("info", "scheduler", "scheduled cycle triggered")
+                    result = pipeline.run_full_sync()
+                    if result.get("status") == "ok":
+                        db.set_state("next_sync", _iso(_now() + timedelta(minutes=settings.fixtures_refresh_minutes)))
             else:
                 # Settle finished matches every five minutes so the review ledger
                 # stays current even between full discovery cycles.

@@ -1,4 +1,4 @@
-name: Wake ORACLE for scheduled refresh
+name: Refresh ORACLE predictions
 
 on:
   schedule:
@@ -12,9 +12,62 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  wake-api:
+  refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 100
     steps:
-      - name: Wake the Render API and scheduler
-        run: curl --fail --retry 3 --retry-delay 5 --retry-all-errors --max-time 120 https://oracle-api-k6xr.onrender.com/api/health
+      - name: Trigger and monitor the ORACLE sync
+        env:
+          ORACLE_API: https://oracle-api-k6xr.onrender.com
+        run: |
+          python - <<'PY'
+          import json
+          import time
+          from datetime import datetime, timezone
+          from urllib.request import Request, urlopen
+
+          base = "https://oracle-api-k6xr.onrender.com"
+
+          def call(path, method="GET"):
+              request = Request(base + path, method=method)
+              with urlopen(request, timeout=60) as response:
+                  return json.load(response)
+
+          def latest_sync():
+              scheduler = call("/api/automation").get("scheduler", {})
+              return scheduler.get("last_sync") or {}
+
+          before = latest_sync()
+          before_at = before.get("at")
+          if before_at:
+              try:
+                  age = (datetime.now(timezone.utc) - datetime.fromisoformat(before_at.replace("Z", "+00:00"))).total_seconds()
+                  if age < 20 * 60:
+                      print(f"Recent sync already completed ({int(age)}s ago); skipping duplicate.")
+                      raise SystemExit(0)
+              except ValueError:
+                  pass
+
+          queued = call("/api/sync", "POST")
+          job_id = queued.get("job_id")
+          if not job_id:
+              raise RuntimeError(f"Sync was not queued: {queued}")
+
+          deadline = time.monotonic() + 90 * 60
+          while time.monotonic() < deadline:
+              job = call("/api/jobs/" + job_id)
+              if job.get("status") == "completed":
+                  print(f"Sync completed: {job.get('message', 'ok')}")
+                  raise SystemExit(0)
+              if job.get("status") == "failed":
+                  message = job.get("message", "")
+                  if "already running" not in message.lower():
+                      raise RuntimeError(f"Sync failed: {message}")
+                  current = latest_sync().get("at")
+                  if current and current != before_at:
+                      print("The already-running scheduled sync completed successfully.")
+                      raise SystemExit(0)
+              time.sleep(60)
+
+          raise TimeoutError("ORACLE sync did not finish within 90 minutes")
+          PY
