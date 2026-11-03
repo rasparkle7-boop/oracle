@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+data/*.sqlite3*
+data/cache/
+data/oracle.log
+.chrome*/
+test.png
+mission.png
+*.png
+!docs/*.png

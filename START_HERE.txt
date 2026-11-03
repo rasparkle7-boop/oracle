@@ -1,0 +1,35 @@
+ORACLE // SPORTS INTELLIGENCE ENGINE v2
+=======================================
+
+QUICK START (macOS)
+1. Unzip oracle_v2.zip.
+2. Double-click START_ORACLE_MAC.command (or run ./run.command in Terminal).
+3. Wait for "Uvicorn running on http://127.0.0.1:8787".
+4. Open http://127.0.0.1:8787 in your browser.
+
+The bundled data/oracle.sqlite3 already contains the current 7-day fixture
+window and dossiers. To force a fresh rebuild, delete that file and run:
+
+    python3 -m venv .venv
+    source .venv/bin/activate
+    pip install -r requirements.txt
+    python -m oracle.cli sync --history
+    python -m oracle.cli serve
+
+LIVE EDITING (VS CODE)
+- Open the oracle folder in VS Code once. Auto-save is enabled in .vscode/settings.json.
+- Run ./dev.command instead of ./run.command while editing.
+- Backend Python changes restart the API automatically.
+- CSS/JS/HTML changes reload the browser page automatically.
+- If VS Code was already open before setup, run "Developer: Reload Window" once.
+
+USEFUL
+- python -m oracle.cli status
+- python -m oracle.cli backtest --days 30
+- python -m oracle.cli analyze fb:5795505
+- python -m oracle.cli repredict
+- PROMPT_ORACLE.md is the reusable master build prompt.
+- README.md documents the architecture, data sources and limits.
+
+ORACLE never reads bookmaker odds. Fair odds are 1 / model probability.
+It is a research engine, not a betting service, and it does not guarantee results.

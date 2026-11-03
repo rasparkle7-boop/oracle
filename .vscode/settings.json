@@ -1,0 +1,13 @@
+{
+  "files.autoSave": "afterDelay",
+  "files.autoSaveDelay": 500,
+  "editor.formatOnSave": false,
+  "files.watcherExclude": {
+    "**/data/cache/**": true,
+    "**/data/*.sqlite3*": true,
+    "**/__pycache__/**": true
+  },
+  "python.analysis.extraPaths": [
+    "."
+  ]
+}

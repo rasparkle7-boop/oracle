@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#05070d" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23050a12'/%3E%3Ccircle cx='32' cy='32' r='19' fill='none' stroke='%236ff7ff' stroke-width='4'/%3E%3Ccircle cx='32' cy='32' r='7' fill='%23ff5ccf'/%3E%3C/svg%3E" />
+  <title>ORACLE // Sports Intelligence Engine</title>
+  <meta name="description" content="ORACLE is an independent, market-free sports intelligence engine for football and cricket." />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css?v=2.3" />
+</head>
+<body>
+  <div class="ambient" aria-hidden="true">
+    <div class="ambient-grid"></div>
+    <div class="ambient-glow glow-a"></div>
+    <div class="ambient-glow glow-b"></div>
+    <div class="scanline"></div>
+  </div>
+
+  <div id="boot" class="boot">
+    <div class="boot-inner">
+      <div class="boot-mark">◎</div>
+      <div class="boot-title">ORACLE</div>
+      <div class="boot-sub">INITIALISING INDEPENDENT SPORTS INTELLIGENCE</div>
+      <div class="boot-bar"><span></span></div>
+      <div class="boot-log" id="bootLog">linking data sources · fitting models · arming research core</div>
+    </div>
+  </div>
+
+  <div id="app" class="app" hidden>
+    <aside class="rail">
+      <a class="brand" href="#/mission" aria-label="ORACLE home">
+        <span class="brand-mark">◎</span>
+        <span class="brand-word">ORACLE</span>
+        <span class="brand-tag">v2</span>
+      </a>
+      <nav class="rail-nav" aria-label="Primary">
+        <button class="rail-item active" data-route="mission" title="Mission Control">
+          <svg viewBox="0 0 24 24"><path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z"/></svg>
+          <span>Mission</span>
+        </button>
+        <button class="rail-item" data-route="fixtures" title="Fixture grid">
+          <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/><circle cx="18" cy="18" r="2.4"/></svg>
+          <span>Fixtures</span>
+        </button>
+        <button class="rail-item" data-route="research" title="Research signals">
+          <svg viewBox="0 0 24 24"><path d="M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM16.5 16.5 21 21"/></svg>
+          <span>Research</span>
+        </button>
+        <button class="rail-item" data-route="lab" title="Model laboratory">
+          <svg viewBox="0 0 24 24"><path d="M9 3h6M10 3v6l-5 8a2 2 0 0 0 1.7 3h10.6a2 2 0 0 0 1.7-3l-5-8V3M7.5 14h9"/></svg>
+          <span>Model Lab</span>
+        </button>
+        <button class="rail-item" data-route="slip" title="Model slip lab">
+          <svg viewBox="0 0 24 24"><path d="M5 4h14v16l-7-4-7 4zM9 9h6M9 13h4"/></svg>
+          <span>Slip Lab</span>
+        </button>
+        <button class="rail-item" data-route="automation" title="Automation">
+          <svg viewBox="0 0 24 24"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/><circle cx="12" cy="12" r="4"/></svg>
+          <span>Automation</span>
+        </button>
+        <button class="rail-item" data-route="review" title="Post-match review">
+          <svg viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h9"/><path d="m16 16 2 2 3-3"/></svg>
+          <span>Review</span>
+        </button>
+        <button class="rail-item" data-route="watch" title="Watchlist">
+          <svg viewBox="0 0 24 24"><path d="m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/></svg>
+          <span>Watchlist</span>
+        </button>
+      </nav>
+      <div class="rail-foot">
+        <div class="rail-status"><i></i><span>ENGINE<br/>ONLINE</span></div>
+        <div class="rail-meta">NO MARKET<br/>INPUTS</div>
+      </div>
+    </aside>
+
+    <div class="shell">
+      <header class="topbar">
+        <div class="topbar-left">
+          <span class="mobile-brand">◎ ORACLE</span>
+          <span class="crumb-prefix">ORACLE /</span>
+          <span class="crumb" id="crumb">MISSION CONTROL</span>
+        </div>
+        <div class="topbar-center">
+          <button class="search-trigger" id="searchTrigger">
+            <svg viewBox="0 0 24 24"><path d="M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM16.5 16.5 21 21"/></svg>
+            <span>Search fixtures, teams, competitions</span>
+            <kbd>⌘K</kbd>
+          </button>
+        </div>
+        <div class="topbar-right">
+          <button class="icon-btn mobile-search-btn" id="mobileSearch" aria-label="Search teams and fixtures">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM16.5 16.5 21 21"/></svg>
+          </button>
+          <div class="live-pill" id="livePill"><i></i><span>SYNC</span><b id="syncAge">—</b></div>
+          <div class="clock" id="clock">--:--:--</div>
+          <button class="btn btn-primary" id="syncBtn">
+            <svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v5h-5"/></svg>
+            <span>RUN CYCLE</span>
+          </button>
+        </div>
+      </header>
+
+      <div class="ticker" id="ticker">
+        <div class="ticker-label">SIGNAL WIRE</div>
+        <div class="ticker-window"><div class="ticker-track" id="tickerTrack"><span>Standby for intelligence…</span></div></div>
+      </div>
+
+      <main id="view" class="view" tabindex="-1"></main>
+    </div>
+  </div>
+
+  <div id="modalRoot"></div>
+
+  <div id="palette" class="palette" hidden>
+    <div class="palette-box">
+      <div class="palette-head">
+        <span class="mono">ORACLE COMMAND</span>
+        <button class="icon-btn" id="paletteClose">✕</button>
+      </div>
+      <div class="palette-searchrow">
+        <input id="paletteInput" placeholder="Search any team, league or fixture…" autocomplete="off" />
+        <button class="btn btn-primary" id="paletteSearchBtn">SEARCH</button>
+      </div>
+      <div class="palette-list" id="paletteList"></div>
+      <div class="palette-foot"><span>↑↓ navigate</span><span>↵ open</span><span>esc close</span></div>
+    </div>
+  </div>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <script src="/app.js?v=2.3" defer></script>
+</body>
+</html>

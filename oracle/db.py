@@ -1,0 +1,339 @@
+"""SQLite access layer. Deliberately dependency-free so ORACLE runs anywhere."""
+from __future__ import annotations
+
+import json
+import sqlite3
+import threading
+import uuid
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Iterable, Iterator
+
+from .config import settings
+
+_INIT_LOCK = threading.Lock()
+_INITIALISED = False
+
+
+def utcnow() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def new_id(prefix: str) -> str:
+    return f"{prefix}_{uuid.uuid4().hex[:12]}"
+
+
+def connect(path: Path | None = None) -> sqlite3.Connection:
+    path = path or settings.db_path
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path), timeout=30, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 30000")
+    return conn
+
+
+@contextmanager
+def db() -> Iterator[sqlite3.Connection]:
+    conn = connect()
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def init_db() -> None:
+    global _INITIALISED
+    with _INIT_LOCK:
+        if _INITIALISED:
+            return
+        schema = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
+        with db() as conn:
+            conn.executescript(schema)
+            # Lightweight forward migrations for existing local databases.
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(settlements)")}
+            if "pick_prob" not in cols:
+                conn.execute("ALTER TABLE settlements ADD COLUMN pick_prob REAL")
+            hcols = {r[1] for r in conn.execute("PRAGMA table_info(prediction_history)")}
+            if "lineups_fingerprint" not in hcols:
+                conn.execute("ALTER TABLE prediction_history ADD COLUMN lineups_fingerprint TEXT DEFAULT ''")
+        _INITIALISED = True
+
+
+def json_dumps(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+
+
+def json_loads(value: Any, default: Any = None) -> Any:
+    if value is None or value == "":
+        return default
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(value)
+    except Exception:
+        return default
+
+
+def rows(conn: sqlite3.Connection, sql: str, params: Iterable[Any] = ()) -> list[dict]:
+    return [dict(r) for r in conn.execute(sql, tuple(params)).fetchall()]
+
+
+def row(conn: sqlite3.Connection, sql: str, params: Iterable[Any] = ()) -> dict | None:
+    r = conn.execute(sql, tuple(params)).fetchone()
+    return dict(r) if r else None
+
+
+def scalar(conn: sqlite3.Connection, sql: str, params: Iterable[Any] = (), default: Any = None) -> Any:
+    r = conn.execute(sql, tuple(params)).fetchone()
+    return r[0] if r else default
+
+
+def set_state(key: str, value: Any, conn: sqlite3.Connection | None = None) -> None:
+    payload = json_dumps(value) if not isinstance(value, str) else value
+    own = conn is None
+    conn = conn or connect()
+    try:
+        conn.execute(
+            "INSERT INTO sync_state(key, value, updated_at) VALUES(?,?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+            (key, payload, utcnow()),
+        )
+        if own:
+            conn.commit()
+    finally:
+        if own:
+            conn.close()
+
+
+def get_state(key: str, default: Any = None) -> Any:
+    with db() as conn:
+        r = row(conn, "SELECT value FROM sync_state WHERE key=?", (key,))
+    if not r:
+        return default
+    raw = r["value"]
+    if isinstance(raw, str) and raw[:1] in "[{":
+        return json_loads(raw, default)
+    return raw
+
+
+def log(level: str, scope: str, message: str, payload: Any = None) -> None:
+    try:
+        with db() as conn:
+            conn.execute(
+                "INSERT INTO event_log(ts, level, scope, message, payload) VALUES(?,?,?,?,?)",
+                (utcnow(), level, scope, message, json_dumps(payload or {})),
+            )
+            # keep the log bounded
+            conn.execute(
+                "DELETE FROM event_log WHERE id < (SELECT MAX(id) - 4000 FROM event_log)"
+            )
+    except Exception:
+        pass
+
+
+def create_job(kind: str, message: str = "queued") -> str:
+    job_id = new_id("job")
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO sync_jobs(id, kind, status, started_at, progress, message) VALUES(?,?,?,?,?,?)",
+            (job_id, kind, "running", utcnow(), 0.0, message),
+        )
+    return job_id
+
+
+def update_job(job_id: str, *, status: str | None = None, progress: float | None = None,
+               message: str | None = None, stats: dict | None = None) -> None:
+    sets, params = [], []
+    if status is not None:
+        sets.append("status=?")
+        params.append(status)
+    if progress is not None:
+        sets.append("progress=?")
+        params.append(max(0.0, min(1.0, progress)))
+    if message is not None:
+        sets.append("message=?")
+        params.append(message)
+    if stats is not None:
+        sets.append("stats=?")
+        params.append(json_dumps(stats))
+    if status in ("completed", "failed", "cancelled"):
+        sets.append("finished_at=?")
+        params.append(utcnow())
+    if not sets:
+        return
+    params.append(job_id)
+    with db() as conn:
+        conn.execute(f"UPDATE sync_jobs SET {', '.join(sets)} WHERE id=?", params)
+
+
+# ---------------------------------------------------------------------------
+# Upserts
+# ---------------------------------------------------------------------------
+
+def upsert_competition(conn: sqlite3.Connection, comp: dict) -> None:
+    conn.execute(
+        """INSERT INTO competitions(id, sport, name, country, tier, logo, source, metadata, updated_at)
+           VALUES(?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(id) DO UPDATE SET
+             name=excluded.name, country=excluded.country, tier=excluded.tier,
+             logo=COALESCE(excluded.logo, competitions.logo), metadata=excluded.metadata,
+             updated_at=excluded.updated_at""",
+        (
+            comp["id"], comp["sport"], comp["name"], comp.get("country"), comp.get("tier"),
+            comp.get("logo"), comp.get("source"), json_dumps(comp.get("metadata", {})), utcnow(),
+        ),
+    )
+
+
+def upsert_team(conn: sqlite3.Connection, team: dict) -> None:
+    conn.execute(
+        """INSERT INTO teams(id, sport, name, short_name, country, logo, metadata, updated_at)
+           VALUES(?,?,?,?,?,?,?,?)
+           ON CONFLICT(id) DO UPDATE SET
+             name=excluded.name, short_name=COALESCE(excluded.short_name, teams.short_name),
+             logo=COALESCE(excluded.logo, teams.logo), metadata=excluded.metadata,
+             updated_at=excluded.updated_at""",
+        (
+            team["id"], team["sport"], team["name"], team.get("short_name"), team.get("country"),
+            team.get("logo"), json_dumps(team.get("metadata", {})), utcnow(),
+        ),
+    )
+
+
+FIXTURE_FIELDS = [
+    "id", "sport", "competition_id", "season", "round", "kickoff_utc", "status",
+    "home_team_id", "away_team_id", "home_name", "away_name", "venue", "city", "country",
+    "home_score", "away_score", "home_score_num", "away_score_num", "score_detail",
+    "winner_team_id", "source", "source_url", "importance", "raw",
+]
+
+
+def upsert_fixture(conn: sqlite3.Connection, fx: dict) -> None:
+    payload = {k: fx.get(k) for k in FIXTURE_FIELDS}
+    payload["importance"] = float(payload.get("importance") or 0.5)
+    payload["raw"] = json_dumps(fx.get("raw", {}))
+    payload["updated_at"] = utcnow()
+    payload["created_at"] = utcnow()
+    cols = FIXTURE_FIELDS + ["created_at", "updated_at"]
+    placeholders = ",".join("?" for _ in cols)
+    updates = ",".join(
+        f"{c}=excluded.{c}" for c in FIXTURE_FIELDS if c != "id"
+    ) + ", updated_at=excluded.updated_at"
+    conn.execute(
+        f"INSERT INTO fixtures({','.join(cols)}) VALUES({placeholders}) "
+        f"ON CONFLICT(id) DO UPDATE SET {updates}",
+        tuple(payload.get(c) for c in FIXTURE_FIELDS) + (payload["created_at"], payload["updated_at"]),
+    )
+
+
+def upsert_prediction(conn: sqlite3.Connection, p: dict) -> None:
+    cols = [
+        "fixture_id", "sport", "model_version", "generated_at", "home_prob", "draw_prob",
+        "away_prob", "pick", "pick_side", "pick_prob", "pick_fair", "edge", "confidence",
+        "data_depth", "expected_home", "expected_away", "markets", "score_grid", "analysis", "features",
+    ]
+    payload = dict(p)
+    for key in ("markets", "score_grid", "analysis", "features"):
+        payload[key] = json_dumps(payload.get(key, [] if key == "markets" else {}))
+    updates = ",".join(f"{c}=excluded.{c}" for c in cols if c != "fixture_id")
+    conn.execute(
+        f"INSERT INTO predictions({','.join(cols)}) VALUES({','.join('?' for _ in cols)}) "
+        f"ON CONFLICT(fixture_id) DO UPDATE SET {updates}",
+        tuple(payload.get(c) for c in cols),
+    )
+
+
+def upsert_research(conn: sqlite3.Connection, r: dict) -> None:
+    cols = [
+        "fixture_id", "generated_at", "depth", "home_news_count", "away_news_count",
+        "injury_signals", "weather", "pitch", "fatigue", "tactical", "citations", "summary", "raw",
+    ]
+    payload = dict(r)
+    for key in ("injury_signals", "citations"):
+        payload[key] = json_dumps(payload.get(key, []))
+    for key in ("weather", "pitch", "fatigue", "tactical", "raw"):
+        payload[key] = json_dumps(payload.get(key, {}))
+    updates = ",".join(f"{c}=excluded.{c}" for c in cols if c != "fixture_id")
+    conn.execute(
+        f"INSERT INTO research({','.join(cols)}) VALUES({','.join('?' for _ in cols)}) "
+        f"ON CONFLICT(fixture_id) DO UPDATE SET {updates}",
+        tuple(payload.get(c) for c in cols),
+    )
+
+
+def upsert_rating(conn: sqlite3.Connection, r: dict) -> None:
+    cols = [
+        "team_id", "sport", "competition_id", "as_of", "attack", "defence", "elo",
+        "matches", "wins", "draws", "losses", "goals_for", "goals_against", "form",
+        "home_advantage", "metadata",
+    ]
+    payload = dict(r)
+    payload["form"] = json_dumps(payload.get("form", []))
+    payload["metadata"] = json_dumps(payload.get("metadata", {}))
+    updates = ",".join(f"{c}=excluded.{c}" for c in cols if c != "team_id")
+    conn.execute(
+        f"INSERT INTO team_ratings({','.join(cols)}) VALUES({','.join('?' for _ in cols)}) "
+        f"ON CONFLICT(team_id) DO UPDATE SET {updates}",
+        tuple(payload.get(c) for c in cols),
+    )
+
+
+def cache_get(key: str, ttl_minutes: int | None = None) -> Any:
+    with db() as conn:
+        r = row(conn, "SELECT * FROM news_cache WHERE cache_key=?", (key,))
+    if not r:
+        return None
+    if ttl_minutes is not None:
+        try:
+            from datetime import timedelta
+            fetched = datetime.fromisoformat(r["fetched_at"].replace("Z", "+00:00"))
+            if datetime.now(timezone.utc) - fetched > timedelta(minutes=ttl_minutes):
+                return None
+        except Exception:
+            return None
+    return json_loads(r["items"], [])
+
+
+def cache_set(key: str, team_id: str | None, team_name: str | None, items: list, source: str = "") -> None:
+    with db() as conn:
+        conn.execute(
+            """INSERT INTO news_cache(cache_key, team_id, team_name, fetched_at, items, source)
+               VALUES(?,?,?,?,?,?)
+               ON CONFLICT(cache_key) DO UPDATE SET fetched_at=excluded.fetched_at,
+                 items=excluded.items, source=excluded.source""",
+            (key, team_id, team_name, utcnow(), json_dumps(items), source),
+        )
+
+
+def upsert_history(conn: sqlite3.Connection, r: dict) -> None:
+    cols = ["id", "sport", "competition", "played_on", "home_team", "away_team", "home_score",
+            "away_score", "home_wickets", "away_wickets", "winner", "venue", "city", "format",
+            "neutral", "source", "metadata"]
+    payload = dict(r)
+    payload["metadata"] = json_dumps(payload.get("metadata", {}))
+    updates = ",".join(f"{c}=excluded.{c}" for c in cols if c != "id")
+    conn.execute(
+        f"INSERT INTO historical_results({','.join(cols)}) VALUES({','.join('?' for _ in cols)}) "
+        f"ON CONFLICT(id) DO UPDATE SET {updates}",
+        tuple(payload.get(c) for c in cols),
+    )
+
+
+def upsert_market_odds(conn: sqlite3.Connection, row: dict) -> None:
+    cols = ["fixture_id", "fetched_at", "source", "provider", "event_id", "market",
+            "selection", "line", "american", "decimal", "implied", "raw"]
+    payload = dict(row)
+    payload["raw"] = json_dumps(payload.get("raw", {}))
+    updates = ",".join(f"{c}=excluded.{c}" for c in cols if c not in ("fixture_id", "source", "provider", "market", "selection", "line"))
+    conn.execute(
+        f"INSERT INTO market_odds({','.join(cols)}) VALUES({','.join('?' for _ in cols)}) "
+        f"ON CONFLICT(fixture_id, source, provider, market, selection, line) DO UPDATE SET {updates}",
+        tuple(payload.get(c) for c in cols),
+    )
