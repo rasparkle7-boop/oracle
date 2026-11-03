@@ -82,3 +82,52 @@ def test_football_calibration_does_not_emit_fake_certainty(monkeypatch):
     p = football.predict(book, fx)
     assert p["pick_prob"] < 0.80
     assert abs(p["home_prob"] + p["draw_prob"] + p["away_prob"] - 1.0) < 1e-6
+
+
+def test_football_result_double_chance_and_correct_score_cohere():
+    grid = football.score_grid(2.4, 0.5, rho=-0.03)
+    summary, markets = football.grid_markets(grid, "Home", "Away", 2.4, 0.5, -0.03)
+    by_key = {m["key"]: m for m in markets}
+
+    assert abs(sum(summary[k] for k in ("home_win", "draw", "away_win")) - 1.0) < 1e-4
+    assert abs(by_key["dc_1x"]["probability"] - summary["home_win"] - summary["draw"]) < 2e-4
+    assert abs(by_key["dc_x2"]["probability"] - summary["away_win"] - summary["draw"]) < 2e-4
+    assert abs(by_key["dc_12"]["probability"] - summary["home_win"] - summary["away_win"]) < 2e-4
+
+    scores = [m for m in markets if m["group"] == "correct_score"]
+    assert len(scores) == 10
+    assert [m["probability"] for m in scores] == sorted(
+        (m["probability"] for m in scores), reverse=True
+    )
+    assert all(0.0 <= m["probability"] <= 1.0 for m in markets)
+
+
+def test_half_time_full_time_uses_joint_score_distribution():
+    lh, la, rho = 2.4, 0.5, -0.03
+    _, markets = football.grid_markets(
+        football.score_grid(lh, la, rho), "Home", "Away", lh, la, rho
+    )
+    by_key = {m["key"]: m for m in markets}
+    ht = football.score_grid(lh * 0.45, la * 0.45, rho)
+    second = football.score_grid(lh * 0.55, la * 0.55, rho)
+    expected = {(h, f): 0.0 for h in ("home", "draw", "away")
+                for f in ("home", "draw", "away")}
+    n = ht.shape[0]
+    for hi in range(n):
+        for ai in range(n):
+            ht_side = "home" if hi > ai else "away" if hi < ai else "draw"
+            for si in range(n):
+                for sa in range(n):
+                    ft_home, ft_away = hi + si, ai + sa
+                    ft_side = "home" if ft_home > ft_away else "away" if ft_home < ft_away else "draw"
+                    expected[(ht_side, ft_side)] += ht[hi, ai] * second[si, sa]
+    norm = sum(expected.values())
+    for (ht_side, ft_side), probability in expected.items():
+        assert abs(by_key[f"htft_{ht_side}_{ft_side}"]["probability"] - probability / norm) < 1e-4
+
+    half_scores = [m for m in markets if m["key"].startswith("ht_cs_")]
+    assert len(half_scores) == 5
+    assert [m["probability"] for m in half_scores] == sorted(
+        (m["probability"] for m in half_scores), reverse=True
+    )
+    assert abs(sum(m["probability"] for m in markets if m["key"].startswith("htft_")) - 1.0) < 1e-3

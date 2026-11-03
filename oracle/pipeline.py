@@ -549,64 +549,122 @@ def watch_toggle(fixture_id: str, note: str | None = None) -> dict:
 
 
 def backtest_football(days: int = 30) -> dict:
-    """Chronological hold-out: train before cutoff, predict the hold-out window."""
-    cutoff = _now() - timedelta(days=days)
-    cutoff_iso = _iso(cutoff)
+    """Seven-day walk-forward evaluation with strictly pre-fold training data."""
+    days = max(7, min(120, int(days)))
+    window_end = _now()
+    window_start = window_end - timedelta(days=days)
+    start_iso, end_iso = _iso(window_start), _iso(window_end)
     with db.db() as conn:
         test = db.rows(conn, """SELECT * FROM fixtures WHERE sport='football' AND status='finished'
-                                AND kickoff_utc>=? AND home_score_num IS NOT NULL AND away_score_num IS NOT NULL
-                                ORDER BY kickoff_utc ASC""", (cutoff_iso,))
-        train_rows = db.rows(conn, """SELECT * FROM fixtures WHERE sport='football' AND status='finished'
-                                     AND kickoff_utc<? AND home_score_num IS NOT NULL AND away_score_num IS NOT NULL""",
-                              (cutoff_iso,))
-    # Train strictly before the hold-out window to avoid leakage.
-    book = football_model.train(history_days=1000, before_iso=cutoff_iso, persist=False)
-    brier = []
-    logloss = []
-    cal = []
-    correct = 0
-    baseline_correct = 0
-    by_comp: dict[str, list] = {}
-    for r in test:
-        if isinstance(r.get("raw"), str):
-            r["raw"] = db.json_loads(r["raw"], {}) or {}
-        try:
-            p = football_model.predict(book, r)
-        except Exception:
-            continue
-        probs = np.array([p["home_prob"], p["draw_prob"], p["away_prob"]])
-        actual = 0 if r["home_score_num"] > r["away_score_num"] else 1 if r["home_score_num"] == r["away_score_num"] else 2
-        onehot = np.zeros(3)
-        onehot[actual] = 1
-        brier.append(float(((probs - onehot) ** 2).sum()))
-        logloss.append(float(-np.log(max(1e-9, probs[actual]))))
-        correct += int(np.argmax(probs) == actual)
-        cal.append((float(probs.max()), int(np.argmax(probs) == actual)))
-        baseline_correct += int(actual == 0)
-        by_comp.setdefault(r["competition_id"], []).append((float(((probs - onehot) ** 2).sum()), int(np.argmax(probs) == actual)))
-    n = max(1, len(brier))
-    with db.db() as conn:
+                                AND kickoff_utc>=? AND kickoff_utc<?
+                                AND home_score_num IS NOT NULL AND away_score_num IS NOT NULL
+                                ORDER BY kickoff_utc ASC""", (start_iso, end_iso))
         comp_names = {r["id"]: r["name"] for r in db.rows(conn, "select id, name from competitions")}
-    # calibration buckets on the argmax probability
-    buckets = []
-    for lo in (0.33, 0.40, 0.50, 0.60, 0.70, 0.80):
-        hi = 0.40 if lo == 0.33 else lo + 0.10
-        vals = [(pp, ok) for pp, ok in cal if lo <= pp < hi]
+
+    results: list[dict] = []
+    folds: list[dict] = []
+    cursor = window_start
+    while cursor < window_end:
+        fold_end = min(cursor + timedelta(days=7), window_end)
+        fold_start_iso, fold_end_iso = _iso(cursor), _iso(fold_end)
+        fold_rows = [r for r in test if fold_start_iso <= r["kickoff_utc"] < fold_end_iso]
+        if fold_rows:
+            book = football_model.train(
+                history_days=1000, before_iso=fold_start_iso,
+                as_of_iso=fold_start_iso, persist=False,
+            )
+            folds.append({
+                "from": fold_start_iso, "to": fold_end_iso,
+                "train_before": fold_start_iso,
+                "training_matches": book.training_matches,
+                "test_matches": len(fold_rows),
+            })
+            for fixture in fold_rows:
+                if isinstance(fixture.get("raw"), str):
+                    fixture["raw"] = db.json_loads(fixture["raw"], {}) or {}
+                try:
+                    prediction = football_model.predict(book, fixture)
+                except Exception:
+                    continue
+                probs = np.array([prediction["home_prob"], prediction["draw_prob"], prediction["away_prob"]], dtype=float)
+                actual = (0 if fixture["home_score_num"] > fixture["away_score_num"] else
+                          1 if fixture["home_score_num"] == fixture["away_score_num"] else 2)
+                prior = prediction.get("features", {}).get("base_rates") or {"home": 0.45, "draw": 0.26, "away": 0.29}
+                baseline = np.array([prior.get("home", 0.45), prior.get("draw", 0.26), prior.get("away", 0.29)], dtype=float)
+                baseline = baseline / baseline.sum() if baseline.sum() > 0 else np.array([0.45, 0.26, 0.29])
+                onehot = np.zeros(3)
+                onehot[actual] = 1.0
+                results.append({
+                    "competition_id": fixture["competition_id"],
+                    "actual": actual,
+                    "probabilities": probs,
+                    "baseline": baseline,
+                    "brier": float(((probs - onehot) ** 2).sum()),
+                    "log_loss": float(-np.log(max(1e-9, probs[actual]))),
+                    "correct": int(np.argmax(probs) == actual),
+                    "baseline_brier": float(((baseline - onehot) ** 2).sum()),
+                    "baseline_log_loss": float(-np.log(max(1e-9, baseline[actual]))),
+                    "baseline_correct": int(np.argmax(baseline) == actual),
+                    "home_baseline_correct": int(actual == 0),
+                    "max_probability": float(probs.max()),
+                })
+        cursor = fold_end
+
+    def metrics(rows: list[dict], model: str = "dixon_coles") -> dict:
+        if not rows:
+            return {"n": 0, "brier": None, "log_loss": None, "accuracy": None}
+        brier_key = "brier" if model == "dixon_coles" else "baseline_brier"
+        loss_key = "log_loss" if model == "dixon_coles" else "baseline_log_loss"
+        correct_key = "correct" if model == "dixon_coles" else "baseline_correct"
+        n = len(rows)
+        return {
+            "n": n,
+            "brier": round(sum(r[brier_key] for r in rows) / n, 4),
+            "log_loss": round(sum(r[loss_key] for r in rows) / n, 4),
+            "accuracy": round(sum(r[correct_key] for r in rows) / n, 4),
+        }
+
+    cal_bins = []
+    for bin_index in range(3, 10):
+        lo, hi = bin_index / 10.0, (bin_index + 1) / 10.0
+        vals = [r for r in results if lo <= r["max_probability"] < hi]
         if vals:
-            buckets.append({"bin_low": lo, "bin_high": hi, "n": len(vals),
-                            "avg_pred": round(sum(v[0] for v in vals) / len(vals), 4),
-                            "accuracy": round(sum(v[1] for v in vals) / len(vals), 4)})
+            cal_bins.append({
+                "bin_low": lo, "bin_high": hi, "n": len(vals),
+                "avg_pred": round(sum(r["max_probability"] for r in vals) / len(vals), 4),
+                "accuracy": round(sum(r["correct"] for r in vals) / len(vals), 4),
+            })
+
+    by_comp: dict[str, list[dict]] = {}
+    for result in results:
+        by_comp.setdefault(result["competition_id"], []).append(result)
+    dc_metrics = metrics(results)
+    prior_metrics = metrics(results, "competition_base_rate")
     return {
-        "window_days": days, "test_matches": len(brier), "training_matches": book.training_matches,
-        "calibration": buckets,
-        "brier": round(sum(brier) / n, 4), "log_loss": round(sum(logloss) / n, 4),
-        "accuracy": round(correct / n, 4), "home_baseline_accuracy": round(baseline_correct / n, 4),
-        "calibration_note": "Probabilities are out-of-sample for the hold-out window.",
+        "window_days": days,
+        "date_range": {"from": start_iso, "to": end_iso, "basis": "finished fixtures by kickoff"},
+        "fold_days": 7,
+        "folds": folds,
+        "test_matches": len(results),
+        "training_matches": max((f["training_matches"] for f in folds), default=0),
+        "calibration": cal_bins,
+        "brier": dc_metrics["brier"], "log_loss": dc_metrics["log_loss"],
+        "accuracy": dc_metrics["accuracy"],
+        "baseline_brier": prior_metrics["brier"],
+        "baseline_log_loss": prior_metrics["log_loss"],
+        "baseline_accuracy": prior_metrics["accuracy"],
+        "home_baseline_accuracy": round(sum(r["home_baseline_correct"] for r in results) / len(results), 4) if results else None,
+        "model_comparison": {
+            "dixon_coles": dc_metrics,
+            "competition_base_rate": prior_metrics,
+        },
+        "calibration_note": "Seven-day chronological folds; each fold's training and recency weights end before that fold starts.",
         "by_competition": [
-            {"competition_id": k, "competition": comp_names.get(k, k), "matches": len(v),
-             "brier": round(sum(x[0] for x in v) / len(v), 4),
-             "accuracy": round(sum(x[1] for x in v) / len(v), 4)}
-            for k, v in sorted(by_comp.items(), key=lambda kv: -len(kv[1]))[:12]
+            {"competition_id": key, "competition": comp_names.get(key, key),
+             "matches": len(rows), "brier": metrics(rows)["brier"],
+             "log_loss": metrics(rows)["log_loss"], "accuracy": metrics(rows)["accuracy"],
+             "baseline_brier": metrics(rows, "competition_base_rate")["brier"]}
+            for key, rows in sorted(by_comp.items(), key=lambda pair: -len(pair[1]))[:12]
         ],
     }
 

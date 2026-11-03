@@ -265,28 +265,43 @@ def grid_markets(grid: np.ndarray, home: str, away: str,
             add(f"ht_{side}", f"Half-time: {label}", "halves", prob,
                 assumption="first-half Poisson; 45% xG share", correlation_supported=False,
                 settlement={"type": "ht_result", "side": side})
-        # HT/FT via independent half convolution
-        ft = np.zeros_like(grid)
-        for i in range(n):
-            for j in range(n):
-                if ht[i, j] == 0:
+        # Build the joint HT/FT result distribution from the two independent
+        # half-score grids. FT is cumulative, so multiplying HT and FT outcome
+        # marginals would incorrectly treat the shared first-half goals as
+        # independent of the final score.
+        htft_probs = {
+            (ht_side, ft_side): 0.0
+            for ht_side in ("home", "draw", "away")
+            for ft_side in ("home", "draw", "away")
+        }
+        for hi in range(n):
+            for ai in range(n):
+                p_ht = float(ht[hi, ai])
+                if p_ht <= 0:
                     continue
-                ft += ht[i, j] * second_grid
-        ft = ft / max(ft.sum(), 1e-9)
-        htft_probs = {}
-        for ht_side, htd in (("home", ht_result["home"]), ("draw", ht_result["draw"]), ("away", ht_result["away"])):
-            for ft_side, ftd in (("home", float(np.tril(ft, -1).sum())),
-                                 ("draw", float(np.trace(ft))),
-                                 ("away", float(np.triu(ft, 1).sum()))):
-                # approximate independence between HT and FT distributions
-                htft_probs[(ht_side, ft_side)] = htd * ftd
+                ht_side = "home" if hi > ai else "away" if hi < ai else "draw"
+                for si in range(n):
+                    for sa in range(n):
+                        p = p_ht * float(second_grid[si, sa])
+                        if p <= 0:
+                            continue
+                        final_home, final_away = hi + si, ai + sa
+                        ft_side = "home" if final_home > final_away else "away" if final_home < final_away else "draw"
+                        htft_probs[(ht_side, ft_side)] += p
         total_htft = sum(htft_probs.values()) or 1
         for (ht_side, ft_side), prob in htft_probs.items():
             hn = home if ht_side == "home" else away if ht_side == "away" else "Draw"
             fn = home if ft_side == "home" else away if ft_side == "away" else "Draw"
             add(f"htft_{ht_side}_{ft_side}", f"HT {hn} / FT {fn}", "halves", prob / total_htft,
-                assumption="independent halves; 45/55 xG split", correlation_supported=False,
+                assumption="independent half-score models; 45/55 xG split", correlation_supported=False,
                 settlement={"type": "htft", "ht": ht_side, "ft": ft_side})
+        for k in np.argsort(ht.flatten())[::-1][:5]:
+            i, j = divmod(int(k), n)
+            add(f"ht_cs_{i}_{j}", f"Half-time score {i}-{j}", "halves",
+                float(ht[i, j]), f"{i}-{j}",
+                assumption="first-half Poisson; 45% xG share",
+                correlation_supported=False,
+                settlement={"type": "half_correct", "score": f"{i}-{j}"})
 
     top_k = np.argsort(flat)[::-1][:10]
     top_score_rows = []
@@ -408,8 +423,15 @@ def fit_dixon_coles(home_goals, away_goals, home_ids, away_ids, days_ago,
     }
 
 
-def load_training_data(history_days: int = 420, before_iso: str | None = None) -> list[dict]:
-    cutoff = datetime.now(timezone.utc).timestamp() - history_days * 86400
+def load_training_data(history_days: int = 420, before_iso: str | None = None,
+                       as_of_iso: str | None = None) -> list[dict]:
+    reference_iso = as_of_iso or before_iso
+    try:
+        reference = datetime.fromisoformat(reference_iso.replace("Z", "+00:00")) if reference_iso else datetime.now(timezone.utc)
+        reference = reference.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        reference = datetime.now(timezone.utc)
+    cutoff = reference.timestamp() - history_days * 86400
     cutoff_iso = datetime.fromtimestamp(cutoff, timezone.utc).isoformat().replace("+00:00", "Z")
     upper = before_iso or "9999-12-31T00:00:00Z"
     with db.db() as conn:
@@ -424,7 +446,6 @@ def load_training_data(history_days: int = 420, before_iso: str | None = None) -
             (cutoff_iso, upper),
         )
     out = []
-    now = datetime.now(timezone.utc)
     for r in rows:
         try:
             ko = datetime.fromisoformat(r["kickoff_utc"].replace("Z", "+00:00"))
@@ -434,13 +455,13 @@ def load_training_data(history_days: int = 420, before_iso: str | None = None) -
             continue
         if not (0 <= r["home_score_num"] <= 15 and 0 <= r["away_score_num"] <= 15):
             continue
-        out.append({**r, "days_ago": max(0.0, (now - ko).total_seconds() / 86400)})
+        out.append({**r, "days_ago": max(0.0, (reference - ko).total_seconds() / 86400)})
     return out
 
 
 def train(history_days: int = 420, before_iso: str | None = None,
-          persist: bool = True) -> FootballModelBook:
-    data = load_training_data(history_days, before_iso=before_iso)
+          persist: bool = True, as_of_iso: str | None = None) -> FootballModelBook:
+    data = load_training_data(history_days, before_iso=before_iso, as_of_iso=as_of_iso)
     by_comp: dict[str, list[dict]] = {}
     for row in data:
         by_comp.setdefault(row["competition_id"], []).append(row)
