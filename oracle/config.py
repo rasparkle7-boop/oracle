@@ -6,6 +6,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv(ROOT / ".env.local")
+except ImportError:
+    pass
 DATA_DIR = Path(os.getenv("ORACLE_DATA_DIR", ROOT / "data"))
 WEB_DIR = Path(__file__).resolve().parent / "web"
 DB_PATH = Path(os.getenv("ORACLE_DB", DATA_DIR / "oracle.sqlite3"))

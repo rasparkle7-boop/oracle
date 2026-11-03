@@ -12,3 +12,4 @@ mission.png
 .env
 .env.*
 !.env.example
+.neon
