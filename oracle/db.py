@@ -25,6 +25,17 @@ class _PostgresConnection:
     @staticmethod
     def _translate(sql):
         # Translate ? placeholders without touching quoted SQL strings.
+        # SQLite JSON helpers are used only for scalar paths in fixture listings.
+        sql = re.sub(
+            r"json_extract\(\s*([A-Za-z_][A-Za-z0-9_.]*)\s*,\s*'\$\.([A-Za-z_][A-Za-z0-9_]*)'\s*\)",
+            lambda m: (
+                f"({m.group(1)}::jsonb -> '{m.group(2)}')::text"
+                if m.group(2) == "flags"
+                else f"({m.group(1)}::jsonb ->> '{m.group(2)}')"
+            ),
+            sql,
+            flags=re.IGNORECASE,
+        )
         out = []
         quote = None
         i = 0
